@@ -2,18 +2,11 @@ import os
 import joblib
 import pandas as pd
 import numpy as np
-import torch
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
-
-# Load PyTorch Tabular related things
-try:
-    from pytorch_tabular import TabularModel
-except ImportError:
-    TabularModel = None
 
 app = FastAPI(title="Fraud Detection API")
 
@@ -26,7 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Constants from app1.py
+# Constants
 FEATURES = [
     "step", "amount", "balanceDiffOrig", "balanceDiffDest",
     "destIsMerchant", "senderTxnCount", "receiverTxnCount",
@@ -78,52 +71,36 @@ def load_models():
     # Load CatBoost
     catboost_path = MODELS_DIR / "catboost_optuna.pkl"
     if catboost_path.exists():
-        models["CatBoost (Optuna)"] = joblib.load(catboost_path)
-
-    # Load TabPFN
-    tabpfn_path = MODELS_DIR / "tabpfn_model.pkl"
-    if tabpfn_path.exists():
         try:
-            models["TabPFN (Zero-Shot)"] = joblib.load(tabpfn_path)
+            models["CatBoost (Optuna)"] = joblib.load(catboost_path)
         except Exception as e:
-            print(f"Error loading TabPFN: {e}")
-
-    # Load FT-Transformer
-    ftt_path = MODELS_DIR / "ft_transformer_optuna"
-    if ftt_path.exists() and TabularModel:
-        try:
-            # Re-applying some of the patches from app1.py for FT-Transformer loading
-            _original_torch_load = torch.load
-            def _cpu_load(*args, **kwargs):
-                kwargs.setdefault("map_location", torch.device("cpu"))
-                kwargs.setdefault("weights_only", False)
-                return _original_torch_load(*args, **kwargs)
-            
-            torch.load = _cpu_load
-            try:
-                models["FT-Transformer (Optuna)"] = TabularModel.load_model(str(ftt_path))
-            finally:
-                torch.load = _original_torch_load
-        except Exception as e:
-            print(f"Error loading FT-Transformer: {e}")
+            print(f"Error loading CatBoost: {e}")
 
 def preprocess(df: pd.DataFrame) -> np.ndarray:
-    df = df[FEATURES].copy().astype(float)
+    df_proc = df[FEATURES].copy().astype(float)
     if "robust" in scalers:
-        df[NUMERICAL_ROBUST] = scalers["robust"].transform(df[NUMERICAL_ROBUST])
+        df_proc[NUMERICAL_ROBUST] = scalers["robust"].transform(df_proc[NUMERICAL_ROBUST])
     if "standard" in scalers:
-        df[NUMERICAL_STANDARD] = scalers["standard"].transform(df[NUMERICAL_STANDARD])
-    return df.values.astype(np.float32)
+        df_proc[NUMERICAL_STANDARD] = scalers["standard"].transform(df_proc[NUMERICAL_STANDARD])
+    return df_proc.values.astype(np.float32)
 
-def heuristic_prob(row: dict) -> float:
-    risk = 0.03
-    if row.get("type_TRANSFER", 0) == 1: risk += 0.40
-    if row.get("type_CASH_OUT", 0) == 1: risk += 0.28
-    if row.get("amount", 0) > 1_000_000: risk += 0.15
-    elif row.get("amount", 0) > 500_000: risk += 0.08
-    if row.get("balanceDiffOrig", 0) > 0 and row.get("balanceDiffDest", 0) < 0: risk += 0.10
-    if row.get("destIsMerchant", 0) == 0 and row.get("type_TRANSFER", 0) == 1: risk += 0.05
-    return float(np.clip(risk + np.random.uniform(-0.03, 0.03), 0.01, 0.99))
+def heuristic_prob(row: dict, seed_offset: int = 0) -> float:
+    # Basic rule-based heuristic for "demo" models
+    # We use a seed based on amount to make it semi-deterministic for the same transaction
+    np.random.seed(int(abs(row.get("amount", 0))) % 1000 + seed_offset)
+    
+    risk = 0.05
+    if row.get("type_TRANSFER", 0) == 1: risk += 0.35
+    if row.get("type_CASH_OUT", 0) == 1: risk += 0.25
+    if row.get("amount", 0) > 1_000_000: risk += 0.20
+    elif row.get("amount", 0) > 500_000: risk += 0.10
+    
+    # Large outgoing balance change without merchant destination
+    if row.get("balanceDiffOrig", 0) > 500_000 and row.get("destIsMerchant", 0) == 0:
+        risk += 0.15
+        
+    noise = np.random.uniform(-0.05, 0.05)
+    return float(np.clip(risk + noise, 0.01, 0.99))
 
 @app.post("/predict", response_model=List[PredictionResponse])
 def predict(transaction: Transaction):
@@ -132,47 +109,53 @@ def predict(transaction: Transaction):
     
     results = []
     
-    for model_name in ["CatBoost (Optuna)", "FT-Transformer (Optuna)", "TabPFN (Zero-Shot)"]:
-        model = models.get(model_name)
-        is_demo = False
-        prob = 0.5
-        
-        if model is None:
-            prob = heuristic_prob(row_dict)
-            is_demo = True
-        else:
-            try:
-                if model_name == "FT-Transformer (Optuna)":
-                    # Patch label_encoder if stored as list
-                    if hasattr(model, 'datamodule') and hasattr(model.datamodule, 'label_encoder'):
-                        if isinstance(model.datamodule.label_encoder, list) and len(model.datamodule.label_encoder) == 1:
-                            model.datamodule.label_encoder = model.datamodule.label_encoder[0]
-                    
-                    df_ftt = df[FEATURES].astype(float)
-                    pred = model.predict(df_ftt)
-                    prob_col = [c for c in pred.columns if "prob" in c.lower() and "1" in c]
-                    if prob_col:
-                        prob = float(pred[prob_col[0]].values[0])
-                    else:
-                        prob_col_any = [c for c in pred.columns if "prob" in c.lower()]
-                        if prob_col_any:
-                            prob = float(pred[prob_col_any[-1]].values[0])
-                        else:
-                            prob = 0.5
-                else:
-                    arr = preprocess(df)
-                    prob = float(model.predict_proba(arr)[0][1])
-            except Exception as e:
-                print(f"Error predicting with {model_name}: {e}")
-                prob = heuristic_prob(row_dict)
-                is_demo = True
-        
+    # 1. CatBoost (Actual Model)
+    cb_model = models.get("CatBoost (Optuna)")
+    if cb_model:
+        try:
+            arr = preprocess(df)
+            prob = float(cb_model.predict_proba(arr)[0][1])
+            results.append(PredictionResponse(
+                model_name="CatBoost (Optuna)",
+                is_fraud=prob >= 0.5,
+                probability=prob,
+                is_demo=False
+            ))
+        except Exception as e:
+            print(f"CatBoost Prediction Error: {e}")
+            prob = heuristic_prob(row_dict, seed_offset=1)
+            results.append(PredictionResponse(
+                model_name="CatBoost (Optuna)",
+                is_fraud=prob >= 0.5,
+                probability=prob,
+                is_demo=True
+            ))
+    else:
+        prob = heuristic_prob(row_dict, seed_offset=1)
         results.append(PredictionResponse(
-            model_name=model_name,
+            model_name="CatBoost (Optuna)",
             is_fraud=prob >= 0.5,
             probability=prob,
-            is_demo=is_demo
+            is_demo=True
         ))
+
+    # 2. FT-Transformer (Heuristic Version)
+    prob_ftt = heuristic_prob(row_dict, seed_offset=2)
+    results.append(PredictionResponse(
+        model_name="FT-Transformer (Heuristic)",
+        is_fraud=prob_ftt >= 0.5,
+        probability=prob_ftt,
+        is_demo=True
+    ))
+
+    # 3. TabPFN (Heuristic Version)
+    prob_pfn = heuristic_prob(row_dict, seed_offset=3)
+    results.append(PredictionResponse(
+        model_name="TabPFN (Heuristic)",
+        is_fraud=prob_pfn >= 0.5,
+        probability=prob_pfn,
+        is_demo=True
+    ))
         
     return results
 
@@ -181,7 +164,8 @@ def health_check():
     return {
         "status": "ok",
         "models_loaded": list(models.keys()),
-        "scalers_loaded": list(scalers.keys())
+        "scalers_loaded": list(scalers.keys()),
+        "mode": "CatBoost-Primary-Heuristic-Fallbacks"
     }
 
 if __name__ == "__main__":
