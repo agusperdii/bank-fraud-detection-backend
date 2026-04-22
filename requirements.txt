@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+pandas
+numpy
+joblib
+scikit-learn
+catboost
+torch
+pytorch-tabular==1.1.0
+pytorch-lightning>=1.8.0
+tabpfn-client==0.2.8
+pydantic
+python-multipart
