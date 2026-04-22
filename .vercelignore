@@ -6,3 +6,10 @@ venv
 node_modules
 .pytest_cache
 .DS_Store
+# Large research models and files
+catboost_optuna.pkl
+robust_scaler.pkl
+standard_scaler.pkl
+tabpfn_model.pkl
+ft_transformer_optuna/
+catboost_model.cbm
