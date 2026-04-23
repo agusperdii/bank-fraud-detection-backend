@@ -20,7 +20,7 @@ app.add_middleware(
 )
 
 # URLs for sub-services
-FT_TRANSFORMER_URL = os.getenv("FT_TRANSFORMER_URL", "https://ft-transformer-backend.vercel.app/predict")
+FT_TRANSFORMER_URL = os.getenv("FT_TRANSFORMER_URL", "https://localhost:8003/predict")
 TABPFN_URL = os.getenv("TABPFN_URL", "https://be-tabpfn.vercel.app/predict")
 
 # Constants
@@ -155,24 +155,25 @@ def predict(transaction: Transaction):
 
     # 3. TabPFN (Actual API call to TabPFN Backend)
     try:
-        # Panggil tabpfn-backend yang berjalan secara terpisah
-        pfn_res = requests.post(TABPFN_URL, json=row_dict, timeout=7)
+        # Panggil tabpfn-backend dengan timeout lebih panjang (15s)
+        pfn_res = requests.post(TABPFN_URL, json=row_dict, timeout=15)
         if pfn_res.status_code == 200:
             data = pfn_res.json()
             results.append(PredictionResponse(
                 model_name="TabPFN (Live API)",
-                is_fraud=data["is_fraud"],
-                probability=data["probability"],
+                is_fraud=bool(data["is_fraud"]),
+                probability=float(data["probability"]),
                 is_demo=False
             ))
         else:
-            raise Exception(f"TabPFN backend returned status {pfn_res.status_code}")
+            # Jika backend mengembalikan error (misal 500), tampilkan kodenya
+            raise Exception(f"HTTP {pfn_res.status_code}")
     except Exception as e:
         print(f"TabPFN API Error: {e}")
-        # Fallback ke heuristik jika backend mati
+        error_type = "Timeout" if "timeout" in str(e).lower() else str(e)[:15]
         prob_pfn = heuristic_prob(row_dict, seed_offset=3)
         results.append(PredictionResponse(
-            model_name="TabPFN (Heuristic)", 
+            model_name=f"TabPFN (Backup: {error_type})", 
             is_fraud=prob_pfn >= 0.5, 
             probability=prob_pfn, 
             is_demo=True
