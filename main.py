@@ -155,19 +155,33 @@ def predict(transaction: Transaction):
     # 2. TabPFN (Actual API call to TabPFN Backend)
     try:
         # Panggil tabpfn-backend dengan timeout lebih panjang (15s)
+        # Note: Vercel gateway might still timeout at 10s
         pfn_res = requests.post(TABPFN_URL, json=row_dict, timeout=15)
         if pfn_res.status_code == 200:
             data = pfn_res.json()
+            # Handle potential list or dict response
+            if isinstance(data, list) and len(data) > 0:
+                data = data[0]
+            
             results.append(PredictionResponse(
                 model_name="TabPFN (Cloud)",
-                is_fraud=bool(data["is_fraud"]),
-                probability=float(data["probability"]),
+                is_fraud=bool(data.get("is_fraud", False)),
+                probability=float(data.get("probability", 0.0)),
                 is_demo=False
             ))
         else:
             print(f"TabPFN API Error: HTTP {pfn_res.status_code}")
+            raise Exception("API failure")
     except Exception as e:
-        print(f"TabPFN API Error: {e}")
+        print(f"TabPFN API Error (using fallback): {e}")
+        # Fallback to heuristic for demo purposes if API fails
+        prob = heuristic_prob(row_dict, seed_offset=42)
+        results.append(PredictionResponse(
+            model_name="TabPFN (Cloud)",
+            is_fraud=prob >= 0.5,
+            probability=prob,
+            is_demo=True
+        ))
         
     return results
 
