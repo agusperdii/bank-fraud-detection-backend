@@ -20,8 +20,8 @@ app.add_middleware(
 )
 
 # URLs for sub-services
-FT_TRANSFORMER_URL = os.getenv("FT_TRANSFORMER_URL", "http://localhost:8003/predict")
-TABPFN_URL = os.getenv("TABPFN_URL", "http://localhost:8002/predict")
+FT_TRANSFORMER_URL = os.getenv("FT_TRANSFORMER_URL", "https://ft-transformer-backend.vercel.app/predict")
+TABPFN_URL = os.getenv("TABPFN_URL", "https://be-tabpfn.vercel.app/predict")
 
 # Constants
 FEATURES = [
