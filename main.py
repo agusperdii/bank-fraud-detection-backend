@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
 import onnxruntime as ort
+import requests
 
 app = FastAPI(title="Fraud Detection API")
 
@@ -17,6 +18,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# URLs for sub-services
+FT_TRANSFORMER_URL = os.getenv("FT_TRANSFORMER_URL", "http://localhost:8003/predict")
+TABPFN_URL = os.getenv("TABPFN_URL", "http://localhost:8002/predict")
 
 # Constants
 FEATURES = [
@@ -123,20 +128,55 @@ def predict(transaction: Transaction):
                 is_demo=False
             ))
         except Exception as e:
-            print(f"Prediction Error: {e}")
+            print(f"Prediction Error (CatBoost): {e}")
             prob = heuristic_prob(row_dict, seed_offset=1)
             results.append(PredictionResponse(model_name="CatBoost (Optuna)", is_fraud=prob >= 0.5, probability=prob, is_demo=True))
     else:
         prob = heuristic_prob(row_dict, seed_offset=1)
         results.append(PredictionResponse(model_name="CatBoost (Optuna)", is_fraud=prob >= 0.5, probability=prob, is_demo=True))
 
-    # 2. FT-Transformer (Heuristic)
-    prob_ftt = heuristic_prob(row_dict, seed_offset=2)
-    results.append(PredictionResponse(model_name="FT-Transformer (Heuristic)", is_fraud=prob_ftt >= 0.5, probability=prob_ftt, is_demo=True))
+    # 2. FT-Transformer (Actual API call)
+    try:
+        ft_res = requests.post(FT_TRANSFORMER_URL, json=row_dict, timeout=5)
+        if ft_res.status_code == 200:
+            data = ft_res.json()
+            results.append(PredictionResponse(
+                model_name="FT-Transformer",
+                is_fraud=data["is_fraud"],
+                probability=data["probability"],
+                is_demo=False
+            ))
+        else:
+            raise Exception(f"Status {ft_res.status_code}")
+    except Exception as e:
+        print(f"FT-Transformer API Error: {e}")
+        prob_ftt = heuristic_prob(row_dict, seed_offset=2)
+        results.append(PredictionResponse(model_name="FT-Transformer (Heuristic)", is_fraud=prob_ftt >= 0.5, probability=prob_ftt, is_demo=True))
 
-    # 3. TabPFN (Heuristic)
-    prob_pfn = heuristic_prob(row_dict, seed_offset=3)
-    results.append(PredictionResponse(model_name="TabPFN (Heuristic)", is_fraud=prob_pfn >= 0.5, probability=prob_pfn, is_demo=True))
+    # 3. TabPFN (Actual API call to TabPFN Backend)
+    try:
+        # Panggil tabpfn-backend yang berjalan secara terpisah
+        pfn_res = requests.post(TABPFN_URL, json=row_dict, timeout=7)
+        if pfn_res.status_code == 200:
+            data = pfn_res.json()
+            results.append(PredictionResponse(
+                model_name="TabPFN (Live API)",
+                is_fraud=data["is_fraud"],
+                probability=data["probability"],
+                is_demo=False
+            ))
+        else:
+            raise Exception(f"TabPFN backend returned status {pfn_res.status_code}")
+    except Exception as e:
+        print(f"TabPFN API Error: {e}")
+        # Fallback ke heuristik jika backend mati
+        prob_pfn = heuristic_prob(row_dict, seed_offset=3)
+        results.append(PredictionResponse(
+            model_name="TabPFN (Heuristic)", 
+            is_fraud=prob_pfn >= 0.5, 
+            probability=prob_pfn, 
+            is_demo=True
+        ))
         
     return results
 
@@ -145,7 +185,7 @@ def health_check():
     return {
         "status": "ok",
         "models_loaded": list(models.keys()),
-        "mode": "ONNX-Inference-Lighter-Bundle"
+        "mode": "Distributed-Multi-Backend"
     }
 
 if __name__ == "__main__":
