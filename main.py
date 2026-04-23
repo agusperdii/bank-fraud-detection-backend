@@ -154,9 +154,9 @@ def predict(transaction: Transaction):
     
     # 2. TabPFN (Actual API call to TabPFN Backend)
     try:
-        # Panggil tabpfn-backend dengan timeout lebih panjang (15s)
-        # Note: Vercel gateway might still timeout at 10s
-        pfn_res = requests.post(TABPFN_URL, json=row_dict, timeout=15)
+        # Panggil tabpfn-backend dengan timeout lebih panjang (30s)
+        # Note: Vercel Hobby gateway will still timeout at 10s
+        pfn_res = requests.post(TABPFN_URL, json=row_dict, timeout=30)
         if pfn_res.status_code == 200:
             data = pfn_res.json()
             # Handle potential list or dict response
