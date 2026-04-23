@@ -107,6 +107,27 @@ def heuristic_prob(row: dict, seed_offset: int = 0) -> float:
     noise = np.random.uniform(-0.05, 0.05)
     return float(np.clip(risk + noise, 0.01, 0.99))
 
+@app.post("/predict/catboost", response_model=PredictionResponse)
+def predict_catboost(transaction: Transaction):
+    cb_model = models.get("CatBoost (Optuna)")
+    if not cb_model:
+        raise HTTPException(status_code=503, detail="CatBoost model not loaded")
+    
+    try:
+        arr = preprocess(transaction)
+        inputs = {cb_model.get_inputs()[0].name: arr}
+        outputs = cb_model.run(None, inputs)
+        prob = float(outputs[1][0][1])
+        return PredictionResponse(
+            model_name="CatBoost (Optuna)",
+            is_fraud=prob >= 0.5,
+            probability=prob,
+            is_demo=False
+        )
+    except Exception as e:
+        print(f"CatBoost Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/predict", response_model=List[PredictionResponse])
 def predict(transaction: Transaction):
     row_dict = transaction.dict()
