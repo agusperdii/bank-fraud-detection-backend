@@ -129,55 +129,24 @@ def predict(transaction: Transaction):
             ))
         except Exception as e:
             print(f"Prediction Error (CatBoost): {e}")
-            prob = heuristic_prob(row_dict, seed_offset=1)
-            results.append(PredictionResponse(model_name="CatBoost (Optuna)", is_fraud=prob >= 0.5, probability=prob, is_demo=True))
-    else:
-        prob = heuristic_prob(row_dict, seed_offset=1)
-        results.append(PredictionResponse(model_name="CatBoost (Optuna)", is_fraud=prob >= 0.5, probability=prob, is_demo=True))
-
-    # 2. FT-Transformer (Actual API call)
-    try:
-        ft_res = requests.post(FT_TRANSFORMER_URL, json=row_dict, timeout=5)
-        if ft_res.status_code == 200:
-            data = ft_res.json()
-            results.append(PredictionResponse(
-                model_name="FT-Transformer",
-                is_fraud=data["is_fraud"],
-                probability=data["probability"],
-                is_demo=False
-            ))
-        else:
-            raise Exception(f"Status {ft_res.status_code}")
-    except Exception as e:
-        print(f"FT-Transformer API Error: {e}")
-        prob_ftt = heuristic_prob(row_dict, seed_offset=2)
-        results.append(PredictionResponse(model_name="FT-Transformer (Heuristic)", is_fraud=prob_ftt >= 0.5, probability=prob_ftt, is_demo=True))
-
-    # 3. TabPFN (Actual API call to TabPFN Backend)
+            # If CatBoost fails, we don't add it to results instead of using heuristic
+    
+    # 2. TabPFN (Actual API call to TabPFN Backend)
     try:
         # Panggil tabpfn-backend dengan timeout lebih panjang (15s)
         pfn_res = requests.post(TABPFN_URL, json=row_dict, timeout=15)
         if pfn_res.status_code == 200:
             data = pfn_res.json()
             results.append(PredictionResponse(
-                model_name="TabPFN (Live API)",
+                model_name="TabPFN (Cloud)",
                 is_fraud=bool(data["is_fraud"]),
                 probability=float(data["probability"]),
                 is_demo=False
             ))
         else:
-            # Jika backend mengembalikan error (misal 500), tampilkan kodenya
-            raise Exception(f"HTTP {pfn_res.status_code}")
+            print(f"TabPFN API Error: HTTP {pfn_res.status_code}")
     except Exception as e:
         print(f"TabPFN API Error: {e}")
-        error_type = "Timeout" if "timeout" in str(e).lower() else str(e)[:15]
-        prob_pfn = heuristic_prob(row_dict, seed_offset=3)
-        results.append(PredictionResponse(
-            model_name=f"TabPFN (Backup: {error_type})", 
-            is_fraud=prob_pfn >= 0.5, 
-            probability=prob_pfn, 
-            is_demo=True
-        ))
         
     return results
 
